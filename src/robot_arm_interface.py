@@ -37,6 +37,16 @@ DXL_WRIST = 5
 DXL_GRIPPER = 6
 
 DXL_JOINTS = [DXL_BASE, DXL_SHOULDER_2, DXL_SHOULDER_3, DXL_ELBOW, DXL_WRIST, DXL_GRIPPER]
+
+DXL_BASE_LIMIT = (0, 4095)
+DXL_SHOULDER_2_LIMIT = (1600,3400)
+DXL_SHOULDER_3_LIMIT = (0,4095)
+DXL_ELBOW_LIMIT = (800,2500)
+DXL_WRIST_LIMIT = (750,1300)
+DXL_GRIPPER_LIMIT = (2,1000)
+
+DXL_JOINTS_LIMITS = [DXL_BASE_LIMIT, DXL_SHOULDER_2_LIMIT, DXL_SHOULDER_3_LIMIT, DXL_ELBOW_LIMIT, DXL_WRIST_LIMIT, DXL_GRIPPER_LIMIT]
+
 DEFAULT_PROFILE_VELOCITY = 20 # value * 0.229 rpm
 
 # Setup
@@ -116,29 +126,110 @@ def get_arm_position(req):
 
     return arm_position[0], arm_position[1], arm_position[2], arm_position[3], arm_position[4], arm_position[5]
 
+
+def check_base_position_in_sync(goal_position_2, goal_position_3):
+    if goal_position_3 == -1:
+        return False
+    dxl_present_position_2, dxl_comm_result, dxl_error = packetHandler.read4ByteTxRx(portHandler, DXL_SHOULDER_2, ADDR_PRESENT_POSITION)
+    if dxl_comm_result != COMM_SUCCESS:
+        print("%s" % packetHandler.getTxRxResult(dxl_comm_result))
+        return False
+    elif dxl_error != 0:
+        print("%s" % packetHandler.getRxPacketError(dxl_error))
+        return False
+    difference_2 = dxl_present_position_2 - goal_position_2
+
+
+    dxl_present_position_3, dxl_comm_result, dxl_error = packetHandler.read4ByteTxRx(portHandler, DXL_SHOULDER_3, ADDR_PRESENT_POSITION)
+    if dxl_comm_result != COMM_SUCCESS:
+        print("%s" % packetHandler.getTxRxResult(dxl_comm_result))
+        return False
+    elif dxl_error != 0:
+        print("%s" % packetHandler.getRxPacketError(dxl_error))
+        return False
+    difference_3 = dxl_present_position_3 - goal_position_3
+
+    if abs(difference_2) - abs(difference_3) < 8:
+        if (difference_2 < 0 and difference_3 > 0) or (difference_2 > 0 and difference_3 < 0):
+            return True
+    else:
+        return False
+
+def calculate_goal_position_3(goal_position_2):
+    if goal_position_2 == -1:
+        return -1
+
+    dxl_present_position_2, dxl_comm_result, dxl_error = packetHandler.read4ByteTxRx(portHandler, DXL_SHOULDER_2, ADDR_PRESENT_POSITION)
+    if dxl_comm_result != COMM_SUCCESS:
+        print("%s" % packetHandler.getTxRxResult(dxl_comm_result))
+        return -2
+    elif dxl_error != 0:
+        print("%s" % packetHandler.getRxPacketError(dxl_error))
+        return -2
+    difference = dxl_present_position_2 - goal_position_2
+
+    dxl_present_position_3, dxl_comm_result, dxl_error = packetHandler.read4ByteTxRx(portHandler, DXL_SHOULDER_3, ADDR_PRESENT_POSITION)
+    if dxl_comm_result != COMM_SUCCESS:
+        print("%s" % packetHandler.getTxRxResult(dxl_comm_result))
+        return -2
+    elif dxl_error != 0:
+        print("%s" % packetHandler.getRxPacketError(dxl_error))
+        return -2
+
+    if goal_position_2 > dxl_present_position_2:
+        print("position3 calculated -",dxl_present_position_3 - abs(difference))
+        return dxl_present_position_3 - abs(difference)
+
+    elif goal_position_2 < dxl_present_position_2:
+        print("position3 calculated +",dxl_present_position_3 + abs(difference))
+        return dxl_present_position_3 + abs(difference)
+    return -2
+
+
 def set_arm_position(req):
     groupBulkWrite.clearParam()
-    arm_positions = [req.position_1, req.position_2, req.position_3, req.position_4, req.position_5, req.position_6]
+    if req.position_3 != -1:
+        print("position_3 needs to be -1 (always)")
+        return False
 
-    for position in arm_positions:
-        if not (-1 <= position <= 4095):
+    new_position_3 = calculate_goal_position_3(req.position_2)
+    arm_positions = [req.position_1, req.position_2, new_position_3, req.position_4, req.position_5, req.position_6]
+
+    print("position2:",req.position_2,"position_3",new_position_3)
+
+    if req.position_2 != -1 and new_position_3 != -1:
+        if not check_base_position_in_sync(req.position_2, new_position_3):
+            print("Base not in sync")
             return False
+
+    for position, dxl_joint_limit in zip(arm_positions, DXL_JOINTS_LIMITS):
+        if not (-2 <= position <= 4095):
+            print("out of min-max range")
+            return False
+        
+        if not (position == -1 or position == -2):
+            if not (dxl_joint_limit[0] <= position <= dxl_joint_limit[1]):
+                print("arm out of setting range")
+                return False
+
         print(position)
 
     for position, dxl_id in zip(arm_positions,DXL_JOINTS):
-        if position == -1:
+        if position == -1 or position == 0:
             continue
-        print(position)
+        if position == -2:
+            return False
         param_goal_position = set_param_goal_position(position)
         dxl_addparam_result = groupBulkWrite.addParam(dxl_id, ADDR_GOAL_POSITION, LEN_GOAL_POSITION, param_goal_position)
         print("ID%d: position=%d" % (dxl_id, position))
         if dxl_addparam_result != True:
-            print("[ID:%03d] groupBulkWrite addparam failed" % dxl_id)
+            print("MOVING [ID:%03d] groupBulkWrite addparam failed" % dxl_id)
 
     dxl_comm_result = groupBulkWrite.txPacket()
     if dxl_comm_result != COMM_SUCCESS:
         print("%s" % packetHandler.getTxRxResult(dxl_comm_result))
         return False
+
     return True
 
 def set_torque(req):
