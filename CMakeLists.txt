@@ -38,6 +38,7 @@ add_service_files(
     GetArmPosition.srv
     SetArmPosition.srv
     SetTorque.srv
+    GripperControl.srv
 )
 
 ## Generate added messages and services with any dependencies listed here
